@@ -1,0 +1,47 @@
+DESCRIPTION >
+	Identify any sensors that have not reported in a specified amount of seconds
+
+This Copy Pipe test for `timeout` anomalies across all sensors and write output to the `copy_log` Data Source. These Copy Pipes do the work of compiling their detections into a single place.
+
+These Copy Pipes do not support query parameters so some details are hardcoded in the SQL. For example, this Pipe hardcodes the amount of time needed to quality as a timeout to `10` seconds.
+
+
+TOKEN "scheduled_copy_timeout" READ
+
+NODE get_most_recent
+DESCRIPTION >
+    Compile the most recent reports from all sensors.
+
+SQL >
+
+     SELECT id, 
+          timestamp, 
+          value
+        FROM incoming_data
+        ORDER BY timestamp DESC 
+        LIMIT 1 BY id
+
+
+
+NODE log
+DESCRIPTION >
+    Determine if any sensors have not reported in the specified time window.
+
+    Next: add a timeout_seconds request parameter.
+
+SQL >
+
+    %
+    {% set _timeout_seconds = 10 %}  
+
+    SELECT id, timestamp, value,
+    'timeout' AS anomaly_type,
+    'timestamp is time of last report' AS note
+    FROM get_most_recent
+    WHERE timestamp < NOW() - INTERVAL {{_timeout_seconds}} SECONDS
+
+TYPE copy
+TARGET_DATASOURCE copy_log_duplicates
+COPY_SCHEDULE * * * * *
+
+

@@ -1,0 +1,31 @@
+DESCRIPTION >
+	Pulls from the Copy Pipe-based copy_log Data Source.
+
+
+TOKEN "get_anomalies_read" READ
+
+NODE endpoint
+SQL >
+
+    %
+    SELECT * FROM copy_log
+    WHERE timestamp > addHours(NOW(), -{{ Int16(hours,24,description='How many hours of detection events to return.')}})
+     {% if defined(sensor_id) %}               
+        AND id = {{ Int32(sensor_id, description='Single sensor of interest. ')}}
+     {% end %}    
+     {% if defined(anomaly_type) %}               
+        AND anomaly_type = {{ String(anomaly_type,description='Options: z-source, interquartile range, out-of-range, rate-of-change, timeout.') }}
+     {% end %}    
+    ORDER BY timestamp DESC
+
+
+
+
+NODE get_anomaly_types
+SQL >
+
+    SELECT anomaly_type
+    FROM copy_log
+    GROUP BY anomaly_type
+
+

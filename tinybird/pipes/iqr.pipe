@@ -1,0 +1,56 @@
+DESCRIPTION >
+	This Pipe uses the [Interquartile Range (IQR)](https://en.wikipedia.org/wiki/Interquartile_range) to identify anomalies.
+
+See [HERE](https://github.com/tinybirdco/anomaly-detection/blob/main/content/interquartile-range.md) for more background on this recipe.
+
+Note: the `max_per_sensor` LIMIT was added because with high velocity data streams (many reports per second), many, many detections can occur around step function. When these occur, a stream of these anomalies are detected until the new post-step data range become the new normal. So, this parameter was added to provide some throttling of these detection events. 
+
+If you want to receive all detection events, you can set that parameter to a high number as to not limit at all. 
+
+[] TODO: When limiting a set of consectutive IQR anomaly events, the most recent events are selected. It seems we should be selecting the leading instances of this anomaly, instead of the trailing edge,  
+
+Also note that the Copy Pipe version of this Pipe does not use this LIMIT. All detection events are written to the destination Data Source.
+
+
+NODE endpoint
+DESCRIPTION >
+    The `endpoint` Node uses a Common Table Expression (CTE) to determine Q1 and Q3 for a time window of recent data based on the `stats_window_minutes` parameter. This Node also implements the query parameter for selecting a sensor id of interest. 
+
+    The main query JOINs with the `stats` CTE and tests each event within the `detect_window_seconds` against the lower and upper bounds based on the IQR and the multiplier. This query also supports a `max_per_sensor` parameter for limiting the number of anomaly events to return per sensor.
+
+SQL >
+
+    %
+    WITH
+      {{ Int16(detect_window_seconds, 600, description="Search this many most recent seconds of the data history.") }} AS detect_window_seconds,
+      stats AS (
+      WITH 
+        {{ Float32(iqr_multiplier, 1.5, description = "The multiplier of the IQR to set the range for testing for IQR anomalies.")}} AS iqr_multiplier,  
+        {{ Int16(stats_window_minutes, 10, description="Defines the time window (in MINUTES) for calculating quartiles.") }} AS stats_window_minutes
+      SELECT id,
+         quantileExact(0.25) (value) AS lower_quartile,
+         # quantileExact(0.5) (value) AS mid_quartile,  # Not needed.
+         quantileExact(0.75) (value) AS upper_quartile,
+         (upper_quartile - lower_quartile) * iqr_multiplier AS IQR,
+         stats_window_minutes         
+      FROM incoming_data
+      WHERE timestamp BETWEEN (NOW() - INTERVAL stats_window_minutes MINUTE) AND NOW()
+        {% if defined(sensor_id) %}               
+          AND id = {{ Int32(sensor_id, description="Used to select a single sensor of interest. ")}}
+        {% end %}    
+      GROUP BY id
+    )
+     SELECT DISTINCT timestamp, 
+        id, 
+        value, 
+        ROUND(stats.IQR,2) AS IQR,       
+        ROUND((stats.lower_quartile - stats.IQR),2) AS lower_bound, 
+        ROUND((stats.upper_quartile + stats.IQR),2) AS upper_bound 
+     FROM incoming_data
+     JOIN stats ON incoming_data.id = stats.id
+     WHERE timestamp BETWEEN NOW() - interval detect_window_seconds SECOND AND NOW()
+     AND (value > (stats.upper_quartile + stats.IQR)
+     OR value < (stats.lower_quartile - stats.IQR))
+     ORDER BY timestamp DESC
+
+

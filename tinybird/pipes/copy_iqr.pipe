@@ -1,0 +1,89 @@
+DESCRIPTION >
+	This Copy Pipe tests for `interquartile range` anomalies across all sensors and writes output to the `copy_log_duplicates` Data Source (and the contents of that Data Source is then deduplicated into a `copy_log` Data Source). These Copy Pipes do the work of compiling the five anomaly type detections into a single place.
+
+These Copy Pipes do not support query parameters so some details are set up as variables in the Node queries. For example, this Copy Pipe hardcodes that the IQR is based on a `1.5` multiplier, and uses a 10-minute window for developing stats.  
+
+This Copy Pipe version is based on the `iqr` Pipe which uses the [Interquartile Range (IQR) method](https://en.wikipedia.org/wiki/Interquartile_range) to identify anomalies.
+
+_______________________________________
+**Developing lower and upper bounds**
+
+IQR is based on calculating the first (Q1) and third (Q3) quartiles, applying a multiplier, then matching on data outside of that range. 
+
+
+IQR = (upper quartile - lower quartile)
+
+
+The IQR is then multiplied by a 'tunable' number to develop an upper and lower threshold for identifying anomalies. Commonly, 1.5 is used for the multiplier. So, we have:
+
+Lower bound = Q1 - (IQR * 1.5)
+Upper bound = Q3 + (IQR * 1.5)
+
+Data are identified as outliers if they are less than the lower bound or greater than the upper bound.
+
+Calculation of the IQR is based on a time window of data used to develop the Q1 and Q3. Here we are defaulting to a 10-minute window.
+
+
+TOKEN "scheduled_copy_iqr" READ
+
+NODE get_stats
+DESCRIPTION >
+    Based on a time window (defaulting here to a 10-minute window), calculate the lower quartile, the medium, and the upper quartile. The IQR is then set to (uper quartile - lower quartile) * 1.5.
+
+    Based on the IQR, lower and upper bounds are set for determining data outliers:
+    * lower bound = lower quartile - IQR
+    * upper bound = upper quartile + IQR
+
+SQL >
+
+    %
+    # These can be 'tuned' to match your incoming data
+    {% set _iqr_multipler=1.5 %}  # A multipler used to determine the IQR value. 
+    {% set _stats_window_minutes=10 %}  # Statistical quartiles are based on this most recent window.
+    {% set _detect_window_seconds=61 %} # This Pipe makes a copy every minute, so selecting events since last copy plus one minute. 
+
+    WITH stats AS (
+      SELECT id,
+             quantileExact(0.25) (value) AS lower_quartile,
+             quantileExact(0.5) (value) AS mid_quartile,
+             quantileExact(0.75) (value) AS upper_quartile,
+             (upper_quartile - lower_quartile) * {{_iqr_multipler}} AS IQR
+    FROM incoming_data
+    WHERE timestamp >= toDate(NOW()) - INTERVAL {{_stats_window_minutes}} MINUTES
+    GROUP BY id
+    )
+     SELECT DISTINCT timestamp, 
+        id, 
+        value, 
+        ROUND((stats.lower_quartile - stats.IQR),2) AS lower_bound, 
+        ROUND((stats.upper_quartile + stats.IQR),2) AS upper_bound 
+     FROM incoming_data
+     JOIN stats ON incoming_data.id = stats.id
+     WHERE timestamp >= toDate(NOW()) - INTERVAL {{_detect_window_seconds}} SECONDS
+     AND (value > (stats.upper_quartile + stats.IQR)
+     OR value < (stats.lower_quartile - stats.IQR))
+     ORDER BY timestamp DESC
+
+
+
+
+NODE log
+DESCRIPTION >
+    Selects the most recent IQR-based outlier for each sensor.
+
+SQL >
+
+    SELECT id, 
+          timestamp, 
+          value,
+          'interquartile-range' AS anomaly_type,
+          concat('lower_bound:', toString(ROUND(lower_bound,2)), '| upper_bound:', toString(upper_bound)) AS note
+        FROM get_stats
+        ORDER BY timestamp DESC 
+    
+
+TYPE copy
+TARGET_DATASOURCE copy_log_duplicates
+COPY_SCHEDULE * * * * *
+
+

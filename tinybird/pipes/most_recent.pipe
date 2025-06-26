@@ -1,0 +1,28 @@
+DESCRIPTION >
+	Returns the most recent data for each sensor.
+
+
+TOKEN "most_recent_read" READ
+
+NODE endpoint
+SQL >
+
+     SELECT id, 
+          timestamp, 
+          value
+      FROM incoming_data
+      ORDER BY id ASC, timestamp DESC 
+      LIMIT 1 BY id
+
+
+
+
+NODE test_
+SQL >
+
+    SELECT id, timestamp, value
+    FROM incoming_data
+    ORDER BY id ASC 
+    LIMIT 1 BY id
+
+

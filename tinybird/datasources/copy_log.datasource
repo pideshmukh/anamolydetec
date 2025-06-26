@@ -1,0 +1,12 @@
+# Data Source created from Pipe 'dedup_log'
+
+SCHEMA >
+    `id` Int16,
+    `timestamp` DateTime,
+    `value` Float32,
+    `anomaly_type` String,
+    `note` String
+
+ENGINE "ReplacingMergeTree"
+ENGINE_PARTITION_KEY "toYYYYMM(timestamp)"
+ENGINE_SORTING_KEY "timestamp, id, anomaly_type"
